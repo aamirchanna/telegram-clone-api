@@ -4,6 +4,8 @@ dotenv.config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const cors = require("cors");
+const helmet = require("helmet");
 
 const pool = require("./src/db");
 const authRoutes = require("./src/routes/auth.routes");
@@ -12,6 +14,10 @@ const messageRoutes = require("./src/routes/message.routes");
 const authMiddleware = require("./src/middleware/auth.middleware");
 
 const app = express();
+
+// Security & Middleware
+app.use(helmet());
+app.use(cors());
 app.use(express.json());
 
 // Routes
@@ -32,7 +38,7 @@ app.get("/", async (req, res) => {
 // Create HTTP server and attach Socket.io
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" }, // allow all origins for testing
+  cors: { origin: process.env.CORS_ORIGIN || "*" },
 });
 
 // Socket.io connection
@@ -41,13 +47,28 @@ io.on("connection", (socket) => {
 
   // Join chat room
   socket.on("join_chat", (chatId) => {
-    socket.join(chatId);
-    console.log(`Socket ${socket.id} joined chat ${chatId}`);
+    try {
+      if (!chatId) {
+        socket.emit("error", { message: "chatId is required" });
+        return;
+      }
+      socket.join(chatId);
+      console.log(`Socket ${socket.id} joined chat ${chatId}`);
+      socket.emit("joined_chat", { chatId });
+    } catch (err) {
+      console.error("join_chat error:", err);
+      socket.emit("error", { message: "Failed to join chat" });
+    }
   });
 
   // Send message
   socket.on("send_message", async (data) => {
     const { chat_id, sender_id, content } = data;
+
+    if (!chat_id || !sender_id || !content) {
+      socket.emit("error", { error: "Missing required fields: chat_id, sender_id, content" });
+      return;
+    }
 
     try {
       const { rows } = await pool.query(
@@ -60,16 +81,37 @@ io.on("connection", (socket) => {
       // Emit message to all clients in chat
       io.to(chat_id).emit("receive_message", message);
     } catch (err) {
-      console.error(err);
+      console.error("Send message error:", err);
       socket.emit("error", { error: "Message sending failed", details: err.message });
     }
   });
 
-  socket.on("disconnect", () => {
-    console.log("Client disconnected:", socket.id);
+  socket.on("disconnect", (reason) => {
+    console.log(`Client disconnected: ${socket.id}, Reason: ${reason}`);
   });
+
+  socket.on("error", (err) => {
+    console.error(`Socket error on ${socket.id}:`, err);
+  });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  res.status(err.status || 500).json({
+    error: err.message || "Internal server error",
+    details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
 });
 
 // Start server
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => console.log(`API + Socket.io running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`✓ API + Socket.io running on port ${PORT}`);
+  console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+});

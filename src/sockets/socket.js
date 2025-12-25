@@ -11,4 +11,29 @@ function initSocket(server) {
 
     // Join chat room
     socket.on("join_chat", (chatId) => {
-      socket.join(chatId
+      try {
+        if (!chatId) {
+          socket.emit("error", { message: "chatId is required" });
+          return;
+        }
+        socket.join(chatId);
+        socket.emit("joined_chat", { chatId });
+      } catch (err) {
+        console.error("join_chat error:", err);
+        socket.emit("error", { message: "Failed to join chat" });
+      }
+    });
+
+    socket.on("disconnect", (reason) => {
+      console.log("Client disconnected:", socket.id, reason);
+    });
+
+    socket.on("error", (err) => {
+      console.error("Socket error on", socket.id, err);
+    });
+  });
+
+  return io;
+}
+
+module.exports = initSocket;
