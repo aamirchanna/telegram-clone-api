@@ -1,72 +1,75 @@
-// index.js (CommonJS version)
-
-const dotenv = require('dotenv');
+const dotenv = require("dotenv");
 dotenv.config();
 
-const express = require('express');
-const { Pool } = require('pg');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+
+const pool = require("./src/db");
+const authRoutes = require("./src/routes/auth.routes");
+const chatRoutes = require("./src/routes/chat.routes");
+const messageRoutes = require("./src/routes/message.routes");
+const authMiddleware = require("./src/middleware/auth.middleware");
 
 const app = express();
-app.use(express.json()); // Enable JSON body parsing
+app.use(express.json());
 
-// Connect to Neon DB
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+// Routes
+app.use("/auth", authRoutes);
+app.use("/chat", authMiddleware, chatRoutes);
+app.use("/messages", authMiddleware, messageRoutes);
 
-// Test route
-app.get('/', async (req, res) => {
+app.get("/", async (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW()');
+    const result = await pool.query("SELECT NOW()");
     res.json({ time: result.rows[0] });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Database error' });
+    res.status(500).json({ error: "Database error" });
   }
 });
 
-// Register route
-app.post('/auth/register', async (req, res) => {
-  try {
-    const { username, email, password } = req.body;
-    const hash = await bcrypt.hash(password, 10);
-
-    const { rows } = await pool.query(
-      'INSERT INTO users(username, email, password_hash) VALUES($1,$2,$3) RETURNING id, username, email',
-      [username, email, hash]
-    );
-
-    const user = rows[0];
-    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET);
-    res.json({ user, token });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Registration failed' });
-  }
+// Create HTTP server and attach Socket.io
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*" }, // allow all origins for testing
 });
 
-// Login route
-app.post('/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const { rows } = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
-    const user = rows[0];
-    if (!user) return res.status(401).json({ error: 'User not found' });
+// Socket.io connection
+io.on("connection", (socket) => {
+  console.log("New client connected:", socket.id);
 
-    const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) return res.status(401).json({ error: 'Invalid password' });
+  // Join chat room
+  socket.on("join_chat", (chatId) => {
+    socket.join(chatId);
+    console.log(`Socket ${socket.id} joined chat ${chatId}`);
+  });
 
-    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET);
-    res.json({ user: { id: user.id, username: user.username, email: user.email }, token });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Login failed' });
-  }
+  // Send message
+  socket.on("send_message", async (data) => {
+    const { chat_id, sender_id, content } = data;
+
+    try {
+      const { rows } = await pool.query(
+        "INSERT INTO messages(id, chat_id, sender_id, text) VALUES(gen_random_uuid(), $1, $2, $3) RETURNING *",
+        [chat_id, sender_id, content]
+      );
+
+      const message = rows[0];
+
+      // Emit message to all clients in chat
+      io.to(chat_id).emit("receive_message", message);
+    } catch (err) {
+      console.error(err);
+      socket.emit("error", { error: "Message sending failed", details: err.message });
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Client disconnected:", socket.id);
+  });
 });
 
 // Start server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`API running on port ${PORT}`));
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log(`API + Socket.io running on port ${PORT}`));
