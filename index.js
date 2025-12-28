@@ -9,8 +9,9 @@ const helmet = require("helmet");
 
 const pool = require("./src/db");
 const authRoutes = require("./src/routes/auth.routes");
-const chatRoutes = require("./src/routes/chat.routes");
+const chatRoutes = require("./src/chats/routes");
 const messageRoutes = require("./src/routes/message.routes");
+const userRoutes = require("./src/routes/user.routes");
 const authMiddleware = require("./src/middleware/auth.middleware");
 
 const app = express();
@@ -24,6 +25,7 @@ app.use(express.json());
 app.use("/auth", authRoutes);
 app.use("/chat", authMiddleware, chatRoutes);
 app.use("/messages", authMiddleware, messageRoutes);
+app.use("/users", authMiddleware, userRoutes);
 
 app.get("/", async (req, res) => {
   try {
@@ -35,65 +37,10 @@ app.get("/", async (req, res) => {
   }
 });
 
-// Create HTTP server and attach Socket.io
+// Create HTTP server and attach Socket.io using centralized socket module
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: process.env.CORS_ORIGIN || "*" },
-});
-
-// Socket.io connection
-io.on("connection", (socket) => {
-  console.log("New client connected:", socket.id);
-
-  // Join chat room
-  socket.on("join_chat", (chatId) => {
-    try {
-      if (!chatId) {
-        socket.emit("error", { message: "chatId is required" });
-        return;
-      }
-      socket.join(chatId);
-      console.log(`Socket ${socket.id} joined chat ${chatId}`);
-      socket.emit("joined_chat", { chatId });
-    } catch (err) {
-      console.error("join_chat error:", err);
-      socket.emit("error", { message: "Failed to join chat" });
-    }
-  });
-
-  // Send message
-  socket.on("send_message", async (data) => {
-    const { chat_id, sender_id, content } = data;
-
-    if (!chat_id || !sender_id || !content) {
-      socket.emit("error", { error: "Missing required fields: chat_id, sender_id, content" });
-      return;
-    }
-
-    try {
-      const { rows } = await pool.query(
-        "INSERT INTO messages(id, chat_id, sender_id, text) VALUES(gen_random_uuid(), $1, $2, $3) RETURNING *",
-        [chat_id, sender_id, content]
-      );
-
-      const message = rows[0];
-
-      // Emit message to all clients in chat
-      io.to(chat_id).emit("receive_message", message);
-    } catch (err) {
-      console.error("Send message error:", err);
-      socket.emit("error", { error: "Message sending failed", details: err.message });
-    }
-  });
-
-  socket.on("disconnect", (reason) => {
-    console.log(`Client disconnected: ${socket.id}, Reason: ${reason}`);
-  });
-
-  socket.on("error", (err) => {
-    console.error(`Socket error on ${socket.id}:`, err);
-  });
-});
+const initSocket = require("./src/sockets/socket");
+const io = initSocket(server);
 
 // Global error handler
 app.use((err, req, res, next) => {

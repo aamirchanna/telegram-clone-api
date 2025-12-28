@@ -1,4 +1,3 @@
-// src/routes/chat.routes.js 
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
@@ -25,7 +24,7 @@ router.get('/list', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Create a new chat
+// Create a new chat
 router.post('/create', authMiddleware, async (req, res) => {
   try {
     const { title, is_group } = req.body;
@@ -55,4 +54,3 @@ router.post('/create', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
- 
